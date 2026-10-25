@@ -146,6 +146,9 @@ canvas#cv{display:block;width:100%;cursor:crosshair;touch-action:manipulation}
 .set input{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px;color:var(--ink);font-family:var(--f-mono);font-size:.95rem;width:100%;min-width:0}
 .set input:disabled{opacity:.6}
 .set input[type=range]{padding:0;accent-color:var(--eosin)}
+.set [hidden]{display:none!important}
+.set .wide{grid-column:1/-1}
+.set select{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px;color:var(--ink);font-family:var(--f-body);font-size:.95rem;width:100%;min-width:0}
 .set .chk{flex-direction:row;align-items:center;gap:8px;align-self:end;padding-bottom:8px}
 .set .chk input{width:auto}
 .src{grid-column:1/-1;margin:0;font-size:.8rem;color:var(--muted)}
@@ -221,6 +224,8 @@ footer .wrap{padding-top:0}
           <input type="file" id="file" accept="image/*" multiple hidden>
           <button class="btn" id="mCount" type="button" aria-pressed="true">Count</button>
           <button class="btn" id="mScale" type="button" aria-pressed="false">Set scale</button>
+          <button class="btn" id="mHpf" type="button" aria-pressed="false">HPF circle</button>
+          <button class="btn" id="hot" type="button">Hottest HPF</button>
           <button class="btn spacer" id="undo" type="button">Undo</button>
           <button class="btn" id="clear" type="button">Clear marks</button>
         </div>
@@ -238,8 +243,19 @@ footer .wrap{padding-top:0}
           <div class="metric"><div class="k">eos / HPF</div><div class="v" id="hpf">0</div></div>
         </div>
         <div class="set">
+          <label class="wide">Where is this photo from?<select id="srcSel">
+            <option value="hpf">One HPF already (the whole photo is the field)</option>
+            <option value="scope">Microscope photo, phone or camera</option>
+            <option value="wsi">Digital slide screenshot</option>
+            <option value="bar">Photo has a scale bar</option>
+            <option value="width">I know the photo width</option>
+          </select></label>
+          <label data-s="scope">Objective<select id="obj"><option value="10">10x</option><option value="20">20x</option><option value="40" selected>40x</option><option value="60">60x</option><option value="100">100x</option></select></label>
+          <label data-s="scope">Field number (mm)<input type="number" id="fn" step="0.5" min="1" value="22" inputmode="decimal"></label>
+          <label data-s="wsi">µm per pixel<input type="number" id="umpp" step="0.001" min="0.01" inputmode="decimal" placeholder="0.25 is common at 40x"></label>
           <label>Field area (mm²)<input type="number" id="fieldArea" step="0.001" min="0.001" inputmode="decimal"></label>
-          <label>Scale bar length (µm)<input type="number" id="scaleUm" step="1" min="1" inputmode="decimal" placeholder="e.g. 100"></label>
+          <label data-s="bar">Scale bar length (µm)<input type="number" id="scaleUm" step="1" min="1" inputmode="decimal" placeholder="e.g. 100"></label>
+          <label data-s="width">Photo width (mm)<input type="number" id="photoW" step="0.01" min="0.01" inputmode="decimal" placeholder="e.g. 0.9"></label>
           <label>Standard HPF area (mm²)<input type="number" id="stdArea" step="0.001" min="0.001" value="0.237" inputmode="decimal"></label>
           <label>Threshold (eos/HPF)<input type="number" id="thr" step="1" min="1" value="15" inputmode="numeric"></label>
           <label>Detection sensitivity<input type="range" id="sens" min="0" max="100" value="50"></label>
@@ -258,7 +274,7 @@ footer .wrap{padding-top:0}
             <span class="fine" id="copyMsg" role="status"></span>
           </div>
         </div>
-        <p class="fine">0.237 mm² is a 0.55 mm field diameter. Set the area for your own microscope or scanner. Detection uses color and shape rules, not a trained model. On six test photos with expert marks it found about 2 in 3 eosinophils, and about 4 in 10 of its marks were wrong, so check every mark. Set the field area or scale bar first so cell size is right, and review every mark. Counting aid only. The diagnosis stays with the pathologist.</p>
+        <p class="fine">0.237 mm² is a 0.55 mm field diameter. Set the area for your own microscope or scanner. Detection uses color and shape rules, not a trained model. On six test photos with expert marks it found about 2 in 3 eosinophils, and about 4 in 10 of its marks were wrong, so check every mark. Enter the photo width or set a scale bar so the HPF circle and cell size are right, and review every mark. Counting aid only. The diagnosis stays with the pathologist.</p>
       </aside>
     </div>
   </section>
@@ -433,7 +449,7 @@ $('#orgAll').addEventListener('click',function(){pick('All')});
 syncMap();
 
 /* ---------- Eosinophil calculator ---------- */
-var S={fields:[],i:-1,mode:'count'};
+var S={fields:[],i:-1,mode:'count',src:'hpf'};
 var cv=$('#cv'), ctx=cv.getContext('2d');
 function num(id,d){var v=parseFloat($(id).value);return v>0?v:d}
 function stdArea(){return num('#stdArea',0.237)}
@@ -441,7 +457,22 @@ function thr(){return num('#thr',15)}
 function cur(){return S.fields[S.i]}
 function areaOf(f){return f.umPerPx?f.w*f.h*f.umPerPx*f.umPerPx/1e6:f.area}
 function perMm2(f){var a=areaOf(f);return a>0?f.marks.length/a:0}
-function perHpf(f){return perMm2(f)*stdArea()}
+function hpfR(f){return f.umPerPx?Math.sqrt(stdArea()*1e6/Math.PI)/f.umPerPx:0}
+function circleOK(f){var r=hpfR(f);return r>0&&2*r<=Math.min(f.w,f.h)}
+function inCirc(f){var c=f.circ,r=hpfR(f),n=0;f.marks.forEach(function(m){if(Math.hypot(m.x-c.x,m.y-c.y)<=r)n++});return n}
+function clampC(f,x,y){var r=hpfR(f);return {x:Math.min(Math.max(x,r),f.w-r),y:Math.min(Math.max(y,r),f.h-r)}}
+function bestCirc(f){
+  if(!f.marks.length)return clampC(f,f.w/2,f.h/2);
+  var r=hpfR(f),best=null,bn=-1;
+  f.marks.forEach(function(a){var c=clampC(f,a.x,a.y),n=0;f.marks.forEach(function(m){if(Math.hypot(m.x-c.x,m.y-c.y)<=r)n++});if(n>bn){bn=n;best=c}});
+  return best;
+}
+function circSync(f){
+  if(!f)return;
+  if(!circleOK(f)){f.circ=null;return}
+  if(!f.circ)f.circ=bestCirc(f);else f.circ=clampC(f,f.circ.x,f.circ.y);
+}
+function perHpf(f){return (f.umPerPx&&f.circ&&circleOK(f))?inCirc(f):perMm2(f)*stdArea()}
 
 /* Eosinophil detector v2: port of the pathologist's tuned color rules. Works at 0.382 um/px (ring = 1 HPF, 720 px radius). */
 function eosDisk(m,w,h,r,diamond){var out=new Uint8Array(m.length),i,x,y,dx,dy,xs=[];
@@ -498,7 +529,7 @@ function detect(f){
     var res=eosCore2(d,pw,ph,{dRG:Math.round(70-20*s),dark:85,nuc:$('#needNuc').checked?22:0});
     f.undoMarks=f.marks.slice();
     f.marks=res.map(function(r){return {x:r.x/k,y:r.y/k}});
-    f.auto=true;
+    f.auto=true;f.circ=null;
   }catch(err){$('#hint').textContent='Detection failed for '+f.name+'. Mark cells by hand.'}
 }
 function runDetect(all){
@@ -536,6 +567,33 @@ function newField(name,img,w,h){
   return {name:name,img:img,w:w,h:h,marks:[],pts:[],um:null,umPerPx:null,area:stdArea()};
 }
 function select(i){S.i=i;refresh()}
+function scheduleDetect(f){
+  clearTimeout(S.wt);
+  S.wt=setTimeout(function(){if(f.umPerPx){$('#hint').textContent='Recounting at the new scale…';setTimeout(function(){detect(f);refresh(true)},30)}},700);
+}
+function applySrc(f){
+  if(!f)return;
+  var m=S.src,v;
+  f.pts=[];f.um=null;f.wmm=null;f.umPerPx=null;f.circ=null;
+  if(m==='scope'){var o=num('#obj',40),fn=num('#fn',22);f.um=fn/o*1000}
+  else if(m==='wsi'){v=parseFloat($('#umpp').value);if(v>0)f.umPerPx=v}
+  else if(m==='width'){v=parseFloat($('#photoW').value);if(v>0){f.wmm=v;f.umPerPx=v*1000/f.w}}
+}
+function showSrc(){
+  var m=S.src;
+  Array.prototype.forEach.call(document.querySelectorAll('.set [data-s]'),function(el){el.hidden=el.getAttribute('data-s')!==m});
+}
+$('#srcSel').addEventListener('change',function(e){
+  S.src=e.target.value;showSrc();var f=cur();
+  applySrc(f);
+  if(S.src==='scope'||S.src==='bar')setMode('scale');else if(S.mode==='scale')setMode('count');
+  if(f&&S.src==='hpf'){detect(f)}
+  refresh();
+  if(f&&f.umPerPx)scheduleDetect(f);
+});
+['#obj','#fn'].forEach(function(id){$(id).addEventListener('input',function(){var f=cur();if(!f||S.src!=='scope')return;f.um=num('#fn',22)/num('#obj',40)*1000;applyScale(f);refresh(true);if(f.umPerPx)scheduleDetect(f)})});
+$('#umpp').addEventListener('input',function(e){var f=cur();if(!f||S.src!=='wsi')return;var v=parseFloat(e.target.value);f.umPerPx=v>0?v:null;f.circ=null;refresh(true);scheduleDetect(f)});
+showSrc();
 
 function addFiles(files){
   Array.prototype.forEach.call(files,function(file){
@@ -543,7 +601,7 @@ function addFiles(files){
     var url=URL.createObjectURL(file),im=new Image();
     im.onload=function(){
       var nf=newField(file.name,im,im.naturalWidth,im.naturalHeight);
-      S.fields.push(nf);S.i=S.fields.length-1;refresh();$('#hint').textContent='Counting…';setTimeout(function(){detect(nf);refresh()},40);
+      applySrc(nf);S.fields.push(nf);S.i=S.fields.length-1;refresh();$('#hint').textContent='Counting…';setTimeout(function(){detect(nf);refresh()},40);
     };
     im.src=url;
   });
@@ -554,22 +612,29 @@ var stage=$('#stage');
 stage.addEventListener('dragover',function(e){e.preventDefault()});
 stage.addEventListener('drop',function(e){e.preventDefault();if(e.dataTransfer&&e.dataTransfer.files)addFiles(e.dataTransfer.files)});
 
-function setMode(m){S.mode=m;$('#mCount').setAttribute('aria-pressed',m==='count');$('#mScale').setAttribute('aria-pressed',m==='scale');refresh(true)}
+function setMode(m){S.mode=m;$('#mCount').setAttribute('aria-pressed',m==='count');$('#mScale').setAttribute('aria-pressed',m==='scale');$('#mHpf').setAttribute('aria-pressed',m==='hpf');refresh(true)}
+$('#mHpf').addEventListener('click',function(){setMode('hpf')});
+$('#hot').addEventListener('click',function(){var f=cur();if(!f)return;if(circleOK(f))f.circ=bestCirc(f);else $('#hint').textContent='Set the photo width or a scale bar first. The photo must be wider than one HPF.';refresh(true)});
 $('#mCount').addEventListener('click',function(){setMode('count')});
 $('#mScale').addEventListener('click',function(){setMode('scale')});
 $('#undo').addEventListener('click',function(){var f=cur();if(!f)return;if(S.mode==='scale'){f.pts.pop();applyScale(f)}else if(f.undoMarks){f.marks=f.undoMarks;f.undoMarks=null}else f.marks.pop();refresh()});
 $('#clear').addEventListener('click',function(){var f=cur();if(!f)return;if(S.mode==='scale'){f.pts=[];f.umPerPx=null}else{f.marks=[];f.auto=false;f.undoMarks=null}refresh()});
 
 function applyScale(f){
-  if(f.pts.length===2&&f.um>0){var d=Math.hypot(f.pts[0].x-f.pts[1].x,f.pts[0].y-f.pts[1].y);f.umPerPx=d>0?f.um/d:null}
-  else f.umPerPx=null;
+  if(f.pts.length===2&&f.um>0){var d=Math.hypot(f.pts[0].x-f.pts[1].x,f.pts[0].y-f.pts[1].y);f.umPerPx=d>0?f.um/d:null;f.wmm=null}
+  else if(!f.wmm)f.umPerPx=null;
+  f.circ=null;
 }
 cv.addEventListener('pointerdown',function(e){
   var f=cur();if(!f)return;
   var r=cv.getBoundingClientRect(),k=f.w/r.width,x=(e.clientX-r.left)*k,y=(e.clientY-r.top)*k;
+  if(S.mode==='hpf'){
+    if(circleOK(f)){S.drag=true;try{cv.setPointerCapture(e.pointerId)}catch(_){}f.circ=clampC(f,x,y);refresh(true)}
+    return;
+  }
   if(S.mode==='scale'){
     if(f.pts.length>=2)f.pts=[];
-    f.pts.push({x:x,y:y});applyScale(f);
+    f.pts.push({x:x,y:y});applyScale(f);if(f.umPerPx)scheduleDetect(f);if(S.src==='scope'&&f.umPerPx)setMode('count');
   }else{
     var hit=-1,j;
     for(j=0;j<f.marks.length;j++){if(Math.hypot(f.marks[j].x-x,f.marks[j].y-y)<12*k){hit=j;break}}
@@ -578,7 +643,17 @@ cv.addEventListener('pointerdown',function(e){
   refresh();
 });
 
-$('#scaleUm').addEventListener('input',function(e){var f=cur();if(!f)return;var v=parseFloat(e.target.value);f.um=v>0?v:null;applyScale(f);refresh(true)});
+cv.addEventListener('pointermove',function(e){
+  var f=cur();if(!f||S.mode!=='hpf'||!S.drag)return;
+  var r=cv.getBoundingClientRect(),k=f.w/r.width;f.circ=clampC(f,(e.clientX-r.left)*k,(e.clientY-r.top)*k);refresh(true);
+});
+cv.addEventListener('pointerup',function(){S.drag=false});
+cv.addEventListener('pointercancel',function(){S.drag=false});
+$('#photoW').addEventListener('input',function(e){var f=cur();if(!f)return;var v=parseFloat(e.target.value);
+  if(v>0){f.umPerPx=v*1000/f.w;f.pts=[];f.um=null;f.wmm=v}else if(f.wmm){f.umPerPx=null;f.wmm=null}
+  f.circ=null;refresh(true);
+  scheduleDetect(f)});
+$('#scaleUm').addEventListener('input',function(e){var f=cur();if(!f)return;var v=parseFloat(e.target.value);f.um=v>0?v:null;applyScale(f);refresh(true);if(f.umPerPx)scheduleDetect(f)});
 $('#fieldArea').addEventListener('input',function(e){var f=cur();if(!f)return;var v=parseFloat(e.target.value);if(v>0)f.area=v;refresh(true)});
 $('#stdArea').addEventListener('input',function(){refresh(true)});
 $('#thr').addEventListener('input',function(){refresh(true)});
@@ -604,6 +679,11 @@ function draw(){
     ctx.lineWidth=2.5;ctx.strokeStyle='#c6ff00';
     ctx.beginPath();ctx.arc(x,y,12,0,6.283);ctx.stroke();
   });
+  if(f.circ&&circleOK(f)){
+    var cx=f.circ.x*s,cy=f.circ.y*s,cr=hpfR(f)*s;
+    ctx.save();ctx.fillStyle='rgba(20,16,40,.38)';ctx.beginPath();ctx.rect(0,0,cw,ch);ctx.arc(cx,cy,cr,0,6.283,true);ctx.fill('evenodd');
+    ctx.lineWidth=3;ctx.strokeStyle='#ffb300';ctx.setLineDash([10,6]);ctx.beginPath();ctx.arc(cx,cy,cr,0,6.283);ctx.stroke();ctx.restore();
+  }
   if(f.pts.length){
     ctx.strokeStyle='#00e5ff';ctx.fillStyle='#00e5ff';ctx.lineWidth=2.5;
     f.pts.forEach(function(p){ctx.beginPath();ctx.arc(p.x*s,p.y*s,5,0,6.283);ctx.fill()});
@@ -614,6 +694,7 @@ function draw(){
 function fmt(v,d){return (isFinite(v)?v:0).toFixed(d)}
 function refresh(keepInputs){
   var f=cur();
+  circSync(f);
   draw();
   $('#cnt').textContent=f?f.marks.length:0;
   $('#mm2').textContent=f?fmt(perMm2(f),1):'0';
@@ -621,12 +702,15 @@ function refresh(keepInputs){
   if(!keepInputs){
     $('#fieldArea').value=f?+areaOf(f).toFixed(4):'';
     $('#scaleUm').value=f&&f.um?f.um:'';
+    $('#photoW').value=f&&f.umPerPx?+(f.umPerPx*f.w/1000).toFixed(3):'';
   }
   $('#fieldArea').disabled=!f||!!f.umPerPx;
-  $('#src').textContent=!f?'':(f.umPerPx?'Field area comes from the scale bar ('+fmt(f.umPerPx,3)+' µm per pixel).':'Field area is entered by hand. Set a scale bar to calculate it from the image.');
+  $('#src').textContent=!f?'':(f.umPerPx?'Field area comes from the photo width or scale bar ('+fmt(f.umPerPx,3)+' µm per pixel).':'Field area is entered by hand. Set a scale bar to calculate it from the image.');
   var hint;
   if(!f)hint='Upload or paste a photo to count.';
   else if(S.mode==='count')hint=f.auto?'Counted automatically. Assumes this photo is one HPF unless you set a scale. Tap a wrong mark to remove it, tap a missed cell to add it.':'Tap a cell to mark it. Tap a mark to remove it.';
+  else if(S.mode==='hpf')hint=circleOK(f)?'Tap or drag to move the HPF circle. The eos/HPF value counts the marks inside it.':'Enter the photo width in mm, or set a scale bar. The photo must be wider than one HPF ('+fmt(Math.sqrt(stdArea()*4/Math.PI),2)+' mm across).';
+  else if(S.src==='scope')hint=f.pts.length<2?'Tap two opposite edges of the round field. That distance is '+fmt((f.um||0)/1000,2)+' mm. Points set: '+f.pts.length+' of 2.':'Field measured. Tap again to start over.';
   else hint=f.pts.length<2?'Tap both ends of a scale bar, then enter its length in µm. Points set: '+f.pts.length+' of 2.':'Scale line set. Enter the bar length in µm. Tap again to start over.';
   $('#hint').textContent=hint;
   $('#fields').innerHTML=S.fields.map(function(x,i){
