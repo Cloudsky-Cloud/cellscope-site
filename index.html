@@ -210,14 +210,14 @@ footer .wrap{padding-top:0}
   <section id="calculator">
     <div class="sec-head">
       <h2>Eosinophil calculator</h2>
-      <p>Add photos of high-power fields and press Detect eosinophils. Review the marks, then the tool converts the count to eos/mm² and eos per standard HPF. Photos stay in your browser.</p>
+      <p>Upload a photo of a high-power field, or paste one. The tool counts the eosinophils at once. Check the marks, then it converts the count to eos/mm² and eos per standard HPF. Photos stay in your browser.</p>
     </div>
     <div class="calc">
       <div class="stage" id="stage">
         <div class="bar">
-          <button class="btn" id="add" type="button">Add photos</button>
-          <button class="btn primary" id="detect" type="button">Detect eosinophils</button>
-          <button class="btn" id="detectAll" type="button">Detect all</button>
+          <button class="btn primary" id="add" type="button">Upload photo</button>
+          <button class="btn" id="detect" type="button">Re-detect</button>
+          <button class="btn" id="detectAll" type="button">Re-detect all</button>
           <input type="file" id="file" accept="image/*" multiple hidden>
           <button class="btn" id="mCount" type="button" aria-pressed="true">Count</button>
           <button class="btn" id="mScale" type="button" aria-pressed="false">Set scale</button>
@@ -545,8 +545,8 @@ function addFiles(files){
     if(!/^image\//.test(file.type))return;
     var url=URL.createObjectURL(file),im=new Image();
     im.onload=function(){
-      S.fields.push(newField(file.name,im,im.naturalWidth,im.naturalHeight));
-      S.i=S.fields.length-1;refresh();
+      var nf=newField(file.name,im,im.naturalWidth,im.naturalHeight);
+      S.fields.push(nf);S.i=S.fields.length-1;detect(nf);refresh();
     };
     im.src=url;
   });
@@ -628,8 +628,8 @@ function refresh(keepInputs){
   $('#fieldArea').disabled=!f||!!f.umPerPx;
   $('#src').textContent=!f?'':(f.umPerPx?'Field area comes from the scale bar ('+fmt(f.umPerPx,3)+' µm per pixel).':'Field area is entered by hand. Set a scale bar to calculate it from the image.');
   var hint;
-  if(!f)hint='Add a photo to begin.';
-  else if(S.mode==='count')hint=f.auto?'Marks came from auto-detection. Check each one: tap a false positive to remove it, tap a missed cell to add it.':'Press Detect eosinophils, or tap a cell to mark it. Tap a mark to remove it.';
+  if(!f)hint='Upload or paste a photo to count.';
+  else if(S.mode==='count')hint=f.auto?'Counted automatically. Assumes this photo is one HPF unless you set a scale. Tap a wrong mark to remove it, tap a missed cell to add it.':'Tap a cell to mark it. Tap a mark to remove it.';
   else hint=f.pts.length<2?'Tap both ends of a scale bar, then enter its length in µm. Points set: '+f.pts.length+' of 2.':'Scale line set. Enter the bar length in µm. Tap again to start over.';
   $('#hint').textContent=hint;
   $('#fields').innerHTML=S.fields.map(function(x,i){
@@ -654,6 +654,7 @@ $('#detect').addEventListener('click',function(){runDetect(false)});
 $('#detectAll').addEventListener('click',function(){runDetect(true)});
 $('#sens').addEventListener('change',function(){var f=cur();if(f&&f.auto)runDetect(false)});
 $('#needNuc').addEventListener('change',function(){var f=cur();if(f&&f.auto)runDetect(false)});
+document.addEventListener('paste',function(e){var it=e.clipboardData&&e.clipboardData.files;if(it&&it.length){addFiles(it)}});
 var ro=window.ResizeObserver?new ResizeObserver(function(){draw()}):null;
 if(ro)ro.observe(cv.parentElement);else window.addEventListener('resize',draw);
 
