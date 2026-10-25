@@ -226,7 +226,7 @@ footer .wrap{padding-top:0}
         </div>
         <div class="canvas-box">
           <canvas id="cv" aria-label="Field image. Tap to mark eosinophils."></canvas>
-          <div class="drop" id="drop" hidden><strong>No photo loaded</strong>Drop images here or use Add photos.</div>
+          <div class="drop" id="drop" hidden><strong>Upload a field photo</strong>Drop an image here, paste one, or use Upload photo. Eosinophils are counted at once.</div>
         </div>
         <p class="hint" id="hint"></p>
       </div>
@@ -242,7 +242,7 @@ footer .wrap{padding-top:0}
           <label>Scale bar length (µm)<input type="number" id="scaleUm" step="1" min="1" inputmode="decimal" placeholder="e.g. 100"></label>
           <label>Standard HPF area (mm²)<input type="number" id="stdArea" step="0.001" min="0.001" value="0.237" inputmode="decimal"></label>
           <label>Threshold (eos/HPF)<input type="number" id="thr" step="1" min="1" value="15" inputmode="numeric"></label>
-          <label>Detection sensitivity<input type="range" id="sens" min="0" max="100" value="40"></label>
+          <label>Detection sensitivity<input type="range" id="sens" min="0" max="100" value="50"></label>
           <label class="chk"><input type="checkbox" id="needNuc" checked> Require nucleus</label>
           <p class="src" id="src"></p>
         </div>
@@ -258,7 +258,7 @@ footer .wrap{padding-top:0}
             <span class="fine" id="copyMsg" role="status"></span>
           </div>
         </div>
-        <p class="fine">0.237 mm² is a 0.55 mm field diameter. Set the area for your own microscope or scanner. Detection uses color and shape rules, not a trained model. Set the field area or scale bar first so cell size is right, and review every mark. Counting aid only. The diagnosis stays with the pathologist.</p>
+        <p class="fine">0.237 mm² is a 0.55 mm field diameter. Set the area for your own microscope or scanner. Detection uses color and shape rules, not a trained model. On six test photos with expert marks it found about 2 in 3 eosinophils, and about 4 in 10 of its marks were wrong, so check every mark. Set the field area or scale bar first so cell size is right, and review every mark. Counting aid only. The diagnosis stays with the pathologist.</p>
       </aside>
     </div>
   </section>
@@ -443,64 +443,61 @@ function areaOf(f){return f.umPerPx?f.w*f.h*f.umPerPx*f.umPerPx/1e6:f.area}
 function perMm2(f){var a=areaOf(f);return a>0?f.marks.length/a:0}
 function perHpf(f){return perMm2(f)*stdArea()}
 
-/* Eosinophil detector: color + shape heuristics. d = RGBA bytes, umpp = micrometers per pixel. */
-function eosDil(m,w,h,r){var t=new Uint8Array(m.length),o=new Uint8Array(m.length),x,y,k,a,b;
-  for(y=0;y<h;y++){var row=y*w;for(x=0;x<w;x++){if(m[row+x]){a=x-r<0?0:x-r;b=x+r>=w?w-1:x+r;for(k=a;k<=b;k++)t[row+k]=1}}}
-  for(x=0;x<w;x++){for(y=0;y<h;y++){if(t[y*w+x]){a=y-r<0?0:y-r;b=y+r>=h?h-1:y+r;for(k=a;k<=b;k++)o[k*w+x]=1}}}
-  return o}
-function eosEro(m,w,h,r){var inv=new Uint8Array(m.length),i;for(i=0;i<m.length;i++)inv[i]=m[i]?0:1;
-  var d=eosDil(inv,w,h,r);for(i=0;i<m.length;i++)d[i]=d[i]?0:1;return d}
-function eosFill(m,w,h){var bg=new Uint8Array(m.length),st=new Int32Array(m.length),sp=0,i,x,y;
-  function push(j){if(!m[j]&&!bg[j]){bg[j]=1;st[sp++]=j}}
-  for(x=0;x<w;x++){push(x);push((h-1)*w+x)}for(y=0;y<h;y++){push(y*w);push(y*w+w-1)}
-  while(sp){var j=st[--sp],jx=j%w;if(jx>0)push(j-1);if(jx<w-1)push(j+1);if(j>=w)push(j-w);if(j<m.length-w)push(j+w)}
-  var out=new Uint8Array(m.length);for(i=0;i<m.length;i++)out[i]=bg[i]?0:1;return out}
-function eosComps(m,w,h){var lab=new Int32Array(m.length),st=new Int32Array(m.length),res=[],c=0;
-  for(var s=0;s<m.length;s++){if(!m[s]||lab[s])continue;c++;var sp=0;st[sp++]=s;lab[s]=c;
-    var a=0,sx=0,sy=0,x0=w,x1=0,y0=h,y1=0;
-    while(sp){var j=st[--sp],x=j%w,y=(j-x)/w;a++;sx+=x;sy+=y;if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;
+/* Eosinophil detector v2: port of the pathologist's tuned color rules. Works at 0.382 um/px (ring = 1 HPF, 720 px radius). */
+function eosDisk(m,w,h,r,diamond){var out=new Uint8Array(m.length),i,x,y,dx,dy,xs=[];
+  var offs=[];for(dy=-r;dy<=r;dy++)for(dx=-r;dx<=r;dx++){if(diamond?(Math.abs(dx)+Math.abs(dy)<=r):(dx*dx+dy*dy<=r*r+r))offs.push([dx,dy])}
+  for(y=0;y<h;y++)for(x=0;x<w;x++){if(!m[y*w+x])continue;for(var k=0;k<offs.length;k++){var X=x+offs[k][0],Y=y+offs[k][1];if(X>=0&&X<w&&Y>=0&&Y<h)out[Y*w+X]=1}}return out}
+function eosDilFast(m,w,h,n){ /* diamond dilation, n iterations of 4-neighbour */
+  var a=m,b,i,x,y;for(var it=0;it<n;it++){b=new Uint8Array(a);for(y=0;y<h;y++)for(x=0;x<w;x++){var j=y*w+x;if(a[j]){if(x>0)b[j-1]=1;if(x<w-1)b[j+1]=1;if(y>0)b[j-w]=1;if(y<h-1)b[j+w]=1}}a=b}return a}
+function eosClose(m,w,h,r){var d=eosDisk(m,w,h,r,false),inv=new Uint8Array(d.length),i;for(i=0;i<d.length;i++)inv[i]=d[i]?0:1;
+  var e=eosDisk(inv,w,h,r,false);for(i=0;i<e.length;i++)e[i]=e[i]?0:1;return e}
+function eosLabel(m,w,h){var lab=new Int32Array(m.length),st=new Int32Array(m.length),res=[],c=0;
+  for(var s=0;s<m.length;s++){if(!m[s]||lab[s])continue;c++;var sp=0;st[sp++]=s;lab[s]=c;var px=[];
+    while(sp){var j=st[--sp],x=j%w;px.push(j);
       if(x>0&&m[j-1]&&!lab[j-1]){lab[j-1]=c;st[sp++]=j-1}
       if(x<w-1&&m[j+1]&&!lab[j+1]){lab[j+1]=c;st[sp++]=j+1}
-      if(y>0&&m[j-w]&&!lab[j-w]){lab[j-w]=c;st[sp++]=j-w}
-      if(y<h-1&&m[j+w]&&!lab[j+w]){lab[j+w]=c;st[sp++]=j+w}}
-    res.push({id:c,a:a,cx:sx/a,cy:sy/a,x0:x0,x1:x1,y0:y0,y1:y1})}
-  return {lab:lab,list:res}}
-function eosCore(d,w,h,umpp,o){
-  o=o||{};var sens=o.sens==null?0.5:o.sens,needNuc=o.needNuc!==false,n=w*h;
-  var E=new Uint8Array(n),N=new Uint8Array(n),sMin=0.62-0.36*sens,i,p;
-  for(i=0,p=0;i<n;i++,p+=4){
-    var r=d[p],g=d[p+1],b=d[p+2],mx=r>g?(r>b?r:b):(g>b?g:b),mn=r<g?(r<b?r:b):(g<b?g:b);
-    if(mx===0)continue;
-    var s=(mx-mn)/mx,lum=0.299*r+0.587*g+0.114*b;
-    if(mx===r&&mx>115&&s>=sMin){var hh=60*((g-b)/(mx-mn));if(hh<0)hh+=360;if(hh>=346||hh<=32)E[i]=1}
-    if(lum<130&&b>=r*0.5&&s>0.18)N[i]=1}
-  var rc=Math.max(1,Math.round(1.0/umpp));
-  var B=eosFill(eosEro(eosDil(E,w,h,rc),w,h,rc),w,h);
-  var cc=eosComps(B,w,h),lab=cc.lab,out=[];
-  var rd=Math.max(1,Math.round(1.5/umpp)),Bd=eosDil(B,w,h,rd);
-  var u2=umpp*umpp,amin=55/u2,amax=420/u2;
-  cc.list.forEach(function(c){
-    if(c.a<amin||c.a>amax)return;
-    var bw=c.x1-c.x0+1,bh=c.y1-c.y0+1,asp=Math.max(bw,bh)/Math.min(bw,bh),ext=c.a/(bw*bh);
-    if(asp>2.2||ext<0.45)return;
-    var nn=0,x,y;
-    for(y=Math.max(0,c.y0-rd);y<=Math.min(h-1,c.y1+rd);y++)for(x=Math.max(0,c.x0-rd);x<=Math.min(w-1,c.x1+rd);x++){
-      var j=y*w+x;if(N[j]&&(lab[j]===c.id||(lab[j]===0&&Bd[j])))nn++}
-    var frac=nn/c.a;
-    if(needNuc&&(frac<0.05||frac>0.7))return;
-    out.push({x:c.cx,y:c.cy,a:c.a*u2,nuc:frac})});
+      if(j>=w&&m[j-w]&&!lab[j-w]){lab[j-w]=c;st[sp++]=j-w}
+      if(j<m.length-w&&m[j+w]&&!lab[j+w]){lab[j+w]=c;st[sp++]=j+w}}
+    res.push(px)}
+  return res}
+/* d: RGBA bytes at normalized scale. P: parameters. inside(x,y) optional mask. Returns [{x,y}] in normalized px. */
+function eosCore2(d,w,h,P,inside){
+  P=P||{};var dRG=P.dRG||60,dark=P.dark||92,minred=P.minred||10,peak=P.peak||80,merge=P.merge||14,rbc=P.rbc||100,faint=P.faint||28,amin=P.amin||12,amax=P.amax||600,nuc=P.nuc==null?12:P.nuc;
+  var n=w*h,RG=new Int16Array(n),gray=new Float32Array(n),white=new Uint8Array(n),m0=new Uint8Array(n),i,p;
+  for(i=0,p=0;i<n;i++,p+=4){var r=d[p],g=d[p+1],b=d[p+2];RG[i]=r-g;gray[i]=(r+g+b)/3;
+    if(r<g?(r<b?r:b)>205:(g<b?g:b)>205)white[i]=1;
+    if(r-g>dRG&&r-b>0&&r>110)m0[i]=1}
+  var nw=eosDilFast(white,w,h,9);
+  for(i=0;i<n;i++){if(nw[i])m0[i]=0;else if(inside&&!inside(i%w,(i-i%w)/w))m0[i]=0}
+  var m=eosClose(m0,w,h,5),comps=eosLabel(m,w,h),pts=[];
+  comps.forEach(function(px){
+    var a=px.length;if(a<amin||a>amax)return;
+    var cnt=0,pk=-999,sx=0,sy=0,k;
+    for(k=0;k<a;k++){var j=px[k];if(m0[j])cnt++;if(RG[j]>pk)pk=RG[j];sx+=j%w;sy+=(j-j%w)/w}
+    if(cnt<minred||pk<peak)return;
+    var mk=new Uint8Array(n);for(k=0;k<a;k++)mk[px[k]]=1;
+    var dl=eosDilFast(mk,w,h,6),dk=0;for(i=0;i<n;i++){if(dl[i]&&gray[i]<dark)dk++}
+    if(dk<nuc)return;
+    var cx=Math.floor(sx/a),cy=Math.floor(sy/a),x0=Math.max(0,cx-13),x1=Math.min(w,cx+13),y0=Math.max(0,cy-13),y1=Math.min(h,cy+13),r100=0,r60=0,dk2=0,x,y;
+    for(y=y0;y<y1;y++)for(x=x0;x<x1;x++){var q=y*w+x;if(RG[q]>100)r100++;if(RG[q]>60)r60++;if(gray[q]<92)dk2++}
+    if(r100>=rbc||(r100>=40&&dk2<40)||r60<faint)return;
+    pts.push({x:cx,y:cy})});
+  var out=[];pts.forEach(function(q){if(out.every(function(o){return (q.x-o.x)*(q.x-o.x)+(q.y-o.y)*(q.y-o.y)>merge*merge}))out.push(q)});
   return out}
 
 function detect(f){
   try{
-    var sc=Math.min(1,900/Math.max(f.w,f.h)),pw=Math.max(1,Math.round(f.w*sc)),ph=Math.max(1,Math.round(f.h*sc));
+    var umpp=f.umPerPx||Math.sqrt(areaOf(f)*1e6/(f.w*f.h));
+    var k=umpp/0.382;                       /* rules were tuned at 0.382 um per pixel */
+    var maxPx=3600000;if(f.w*f.h*k*k>maxPx)k=Math.sqrt(maxPx/(f.w*f.h));
+    var pw=Math.max(1,Math.round(f.w*k)),ph=Math.max(1,Math.round(f.h*k));
     var c=document.createElement('canvas');c.width=pw;c.height=ph;
-    var x=c.getContext('2d',{willReadFrequently:true});x.drawImage(f.img,0,0,pw,ph);
+    var x=c.getContext('2d',{willReadFrequently:true});x.imageSmoothingQuality='high';x.drawImage(f.img,0,0,pw,ph);
     var d=x.getImageData(0,0,pw,ph).data;
-    var umpp=(f.umPerPx||Math.sqrt(areaOf(f)*1e6/(f.w*f.h)))/sc;
-    var res=eosCore(d,pw,ph,umpp,{sens:(+$('#sens').value)/100,needNuc:$('#needNuc').checked});
+    var s=(+$('#sens').value)/100;
+    var res=eosCore2(d,pw,ph,{dRG:Math.round(70-20*s),dark:85,nuc:$('#needNuc').checked?22:0});
     f.undoMarks=f.marks.slice();
-    f.marks=res.map(function(r){return {x:r.x/sc,y:r.y/sc}});
+    f.marks=res.map(function(r){return {x:r.x/k,y:r.y/k}});
     f.auto=true;
   }catch(err){$('#hint').textContent='Detection failed for '+f.name+'. Mark cells by hand.'}
 }
@@ -546,7 +543,7 @@ function addFiles(files){
     var url=URL.createObjectURL(file),im=new Image();
     im.onload=function(){
       var nf=newField(file.name,im,im.naturalWidth,im.naturalHeight);
-      S.fields.push(nf);S.i=S.fields.length-1;detect(nf);refresh();
+      S.fields.push(nf);S.i=S.fields.length-1;refresh();$('#hint').textContent='Counting…';setTimeout(function(){detect(nf);refresh()},40);
     };
     im.src=url;
   });
@@ -658,8 +655,6 @@ document.addEventListener('paste',function(e){var it=e.clipboardData&&e.clipboar
 var ro=window.ResizeObserver?new ResizeObserver(function(){draw()}):null;
 if(ro)ro.observe(cv.parentElement);else window.addEventListener('resize',draw);
 
-var ex=makeExample(),f0=newField('Example field (synthetic)',ex.c,ex.c.width,ex.c.height);
-S.fields.push(f0);S.i=0;detect(f0);
 refresh();
 })();
 </script>
